@@ -84,12 +84,12 @@ if (fillet_radius > 0) {
     // here we just apply a tiny radius to the outer cube for demo purposes.
     // In practice you would export and fillet in your slicer or CAD tool.
     // Uncomment the next line if you have the <fillet.scad> library.
-    // minkowski() { cube([outer_x, outer_y, outer_z], center = true); sphere(fillet_radius); }
+     minkowski() { cube([outer_x, outer_y, outer_z], center = true); sphere(fillet_radius); }
     echo("Fillet requested but not automatically applied – export and fillet in your slicer.");
 }
 
 // ------------------------------------------------------------------
 // 5️⃣  Export (commented out – just render, then use File → Export → STL)
 // ------------------------------------------------------------------
-// export_stl("camera_outdoor_enclosure_with_square_hole.stl");
+ export_stl("camera_outdoor_enclosure_with_square_hole.stl");
 // ------------------------------------------------------------------
