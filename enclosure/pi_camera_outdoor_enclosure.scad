@@ -78,10 +78,10 @@ module camera_housing() {
                 lens_collar();
         }
 
-        // Lens bore through front wall + collar
+        // Square lens bore through front wall + collar
         translate([lens_cx, -(outer_z/2 + collar_protrude + 1), lens_y])
             rotate([-90, 0, 0])
-                cylinder(d=lens_hole_dia, h=wall + collar_protrude + 2, $fn=48);
+                cube([lens_hole_dia, lens_hole_dia, wall + collar_protrude + 2], center=true);
 
         // Flange screw holes (4 corners)
         for (x = [-(flange_x/2 - 4), (flange_x/2 - 4)])
@@ -137,9 +137,9 @@ module camera_lid() {
 module lens_collar() {
     rotate([-90, 0, 0])
     difference() {
-        cylinder(d=collar_od, h=collar_protrude + wall, $fn=48);
+        cube([collar_od, collar_od, collar_protrude + wall], center=true);
         translate([0, 0, -0.1])
-            cylinder(d=lens_hole_dia, h=collar_protrude + wall + 0.2, $fn=48);
+            cube([lens_hole_dia, lens_hole_dia, collar_protrude + wall + 0.2], center=true);
     }
 }
 
@@ -158,10 +158,10 @@ module rounded_box(w, h, d, r) {
    ══════════════════════════════ */
 
 // Preview — lid on top of housing
-color("SlateGray") camera_housing();
-color("Blue") translate([0, 0, board_w+lip_h]) camera_lid();
+//color("SlateGray") camera_housing();
+//color("Blue") translate([0, 0, board_w+lip_h]) camera_lid();
 
 
 // For STL export, render ONE at a time:
-//camera_housing(); // → camera_housing.stl
-//camera_lid();     // → camera_lid.stl 
+camera_housing(); // → camera_housing.stl
+//camera_lid();     // → camera_lid.stl
