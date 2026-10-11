@@ -135,12 +135,14 @@ scp pi_camera.py sandipan-pi@sandipan-pi.local:~/
 ssh sandipan-pi@sandipan-pi.local "sudo systemctl restart pi-camera"
 ```
 
-After editing `app.py`:
+After editing `app.py` (fast — no rebuild):
 
 ```bash
-docker build -t pi-stream .
-docker run --rm -p 8080:8080 -e PI_HOST=sandipan-pi.local pi-stream
+docker run --rm -p 8080:8080 -e PI_HOST=sandipan-pi.local \
+  -v ~/Desktop/Sandipan/pi-stream/app.py:/app/app.py pi-stream
 ```
+
+This mounts your local `app.py` into the container. Edit the file, restart the container, changes apply instantly. Only rebuild (`docker build -t pi-stream .`) when you change `requirements.txt` or `Dockerfile`.
 
 ## Debugging
 

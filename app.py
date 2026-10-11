@@ -3,10 +3,10 @@ import socket
 import struct
 import threading
 import time
-from collections import OrderedDict
 
 import cv2
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 from flask import Flask, Response, render_template_string, jsonify
 from ultralytics import YOLO
 
@@ -34,90 +34,129 @@ count_lock = threading.Lock()
 
 
 MIN_CONFIDENCE = float(os.environ.get("MIN_CONFIDENCE", "0.45"))
-MAX_DIST = int(os.environ.get("MAX_DIST", "120"))
+IOU_THRESHOLD = float(os.environ.get("IOU_THRESHOLD", "0.2"))
+MAX_AGE = int(os.environ.get("MAX_AGE", "15"))
 
 
-class CentroidTracker:
-    def __init__(self, max_disappeared=10, confirm_frames=2):
-        self.next_id = 0
-        self.objects = OrderedDict()
-        self.disappeared = OrderedDict()
-        self.seen_count = OrderedDict()
-        self.max_disappeared = max_disappeared
-        self.confirm_frames = confirm_frames
-
-    def register(self, centroid):
-        oid = self.next_id
-        self.objects[oid] = centroid
-        self.disappeared[oid] = 0
-        self.seen_count[oid] = 1
-        self.next_id += 1
-        return oid
-
-    def deregister(self, object_id):
-        del self.objects[object_id]
-        del self.disappeared[object_id]
-        del self.seen_count[object_id]
-
-    def confirmed_objects(self):
-        return {oid: c for oid, c in self.objects.items()
-                if self.seen_count[oid] >= self.confirm_frames}
-
-    def update(self, centroids):
-        if len(centroids) == 0:
-            for oid in list(self.disappeared.keys()):
-                self.disappeared[oid] += 1
-                if self.disappeared[oid] > self.max_disappeared:
-                    self.deregister(oid)
-            return self.confirmed_objects()
-
-        if len(self.objects) == 0:
-            for c in centroids:
-                self.register(c)
-            return self.confirmed_objects()
-
-        object_ids = list(self.objects.keys())
-        object_centroids = list(self.objects.values())
-
-        obj_arr = np.array(object_centroids)
-        new_arr = np.array(centroids)
-        dists = np.linalg.norm(obj_arr[:, None] - new_arr[None, :], axis=2)
-
-        rows = dists.min(axis=1).argsort()
-        cols = dists.argmin(axis=1)[rows]
-
-        used_rows = set()
-        used_cols = set()
-
-        for row, col in zip(rows, cols):
-            if row in used_rows or col in used_cols:
-                continue
-            if dists[row, col] > MAX_DIST:
-                continue
-            oid = object_ids[row]
-            self.objects[oid] = centroids[col]
-            self.disappeared[oid] = 0
-            self.seen_count[oid] += 1
-            used_rows.add(row)
-            used_cols.add(col)
-
-        unused_rows = set(range(len(object_ids))) - used_rows
-        unused_cols = set(range(len(centroids))) - used_cols
-
-        for row in unused_rows:
-            oid = object_ids[row]
-            self.disappeared[oid] += 1
-            if self.disappeared[oid] > self.max_disappeared:
-                self.deregister(oid)
-
-        for col in unused_cols:
-            self.register(centroids[col])
-
-        return self.confirmed_objects()
+def iou_batch(bb_test, bb_gt):
+    x1 = np.maximum(bb_test[:, 0:1], bb_gt[:, 0:1].T)
+    y1 = np.maximum(bb_test[:, 1:2], bb_gt[:, 1:2].T)
+    x2 = np.minimum(bb_test[:, 2:3], bb_gt[:, 2:3].T)
+    y2 = np.minimum(bb_test[:, 3:4], bb_gt[:, 3:4].T)
+    inter = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
+    area_a = (bb_test[:, 2] - bb_test[:, 0]) * (bb_test[:, 3] - bb_test[:, 1])
+    area_b = (bb_gt[:, 2] - bb_gt[:, 0]) * (bb_gt[:, 3] - bb_gt[:, 1])
+    return inter / (area_a[:, None] + area_b[None, :] - inter + 1e-6)
 
 
-tracker = CentroidTracker()
+class KalmanBoxTracker:
+    count = 0
+
+    def __init__(self, bbox):
+        # state: [cx, cy, area, aspect, vx, vy, va]
+        self.kf = cv2.KalmanFilter(7, 4)
+        self.kf.transitionMatrix = np.eye(7, dtype=np.float32)
+        self.kf.transitionMatrix[0, 4] = 1
+        self.kf.transitionMatrix[1, 5] = 1
+        self.kf.transitionMatrix[2, 6] = 1
+        self.kf.measurementMatrix = np.zeros((4, 7), dtype=np.float32)
+        self.kf.measurementMatrix[:4, :4] = np.eye(4, dtype=np.float32)
+        self.kf.measurementNoiseCov = np.eye(4, dtype=np.float32) * 1.0
+        self.kf.processNoiseCov = np.eye(7, dtype=np.float32)
+        self.kf.processNoiseCov[4:, 4:] *= 0.01
+        self.kf.errorCovPost = np.eye(7, dtype=np.float32) * 10
+
+        cx = (bbox[0] + bbox[2]) / 2
+        cy = (bbox[1] + bbox[3]) / 2
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        self.kf.statePost = np.array(
+            [[cx], [cy], [w * h], [w / (h + 1e-6)], [0], [0], [0]],
+            dtype=np.float32)
+
+        self.time_since_update = 0
+        self.id = KalmanBoxTracker.count
+        KalmanBoxTracker.count += 1
+        self.hits = 1
+
+    def update(self, bbox):
+        self.time_since_update = 0
+        self.hits += 1
+        cx = (bbox[0] + bbox[2]) / 2
+        cy = (bbox[1] + bbox[3]) / 2
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        self.kf.correct(np.array(
+            [[cx], [cy], [w * h], [w / (h + 1e-6)]], dtype=np.float32))
+
+    def predict(self):
+        self.kf.predict()
+        self.time_since_update += 1
+        return self.get_state()
+
+    def get_state(self):
+        s = self.kf.statePost
+        cx, cy, area, aspect = float(s[0]), float(s[1]), float(s[2]), float(s[3])
+        w = np.sqrt(max(area * aspect, 1))
+        h = max(area / (w + 1e-6), 1)
+        return np.array([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2])
+
+    def centroid(self):
+        s = self.kf.statePost
+        return int(s[0]), int(s[1])
+
+
+class SORTTracker:
+    def __init__(self, max_age=15, iou_threshold=0.2):
+        self.max_age = max_age
+        self.iou_threshold = iou_threshold
+        self.trackers = []
+
+    def update(self, detections):
+        # predict new locations
+        for t in self.trackers:
+            t.predict()
+
+        if len(self.trackers) == 0:
+            for d in detections:
+                self.trackers.append(KalmanBoxTracker(d))
+            return {t.id: t.centroid() for t in self.trackers}
+
+        if len(detections) == 0:
+            self.trackers = [t for t in self.trackers
+                             if t.time_since_update <= self.max_age]
+            return {t.id: t.centroid() for t in self.trackers
+                    if t.time_since_update == 0}
+
+        trk_boxes = np.array([t.get_state() for t in self.trackers])
+        det_boxes = np.array(detections)
+        iou_matrix = iou_batch(det_boxes, trk_boxes)
+
+        matched_det = set()
+        matched_trk = set()
+
+        if iou_matrix.size > 0:
+            row_idx, col_idx = linear_sum_assignment(-iou_matrix)
+            for r, c in zip(row_idx, col_idx):
+                if iou_matrix[r, c] >= self.iou_threshold:
+                    self.trackers[c].update(detections[r])
+                    matched_det.add(r)
+                    matched_trk.add(c)
+
+        for d in range(len(detections)):
+            if d not in matched_det:
+                self.trackers.append(KalmanBoxTracker(detections[d]))
+
+        self.trackers = [t for i, t in enumerate(self.trackers)
+                         if i in matched_trk or t.time_since_update <= self.max_age]
+
+        return {t.id: t.centroid() for t in self.trackers}
+
+
+tracker = SORTTracker(max_age=MAX_AGE, iou_threshold=IOU_THRESHOLD)
 prev_positions = {}
+first_positions = {}
+counted_ids = set()
 
 
 def recv_exact(sock, n):
@@ -198,37 +237,49 @@ def detection_loop():
         else:
             cv2.line(img, (0, line_px), (w, line_px), (0, 255, 255), 2)
 
-        # scale boxes to display size and collect centroids
-        centroids = []
+        # scale boxes to display size
         scaled_boxes = []
+        det_boxes = []
         for x1, y1, x2, y2, conf in last_boxes:
             sx1, sy1 = int(x1 * scale_x), int(y1 * scale_y)
             sx2, sy2 = int(x2 * scale_x), int(y2 * scale_y)
-            cx, cy = (sx1 + sx2) // 2, (sy1 + sy2) // 2
-            centroids.append((cx, cy))
             scaled_boxes.append((sx1, sy1, sx2, sy2, conf))
+            det_boxes.append([sx1, sy1, sx2, sy2])
 
         for sx1, sy1, sx2, sy2, conf in scaled_boxes:
             cv2.rectangle(img, (sx1, sy1), (sx2, sy2), (0, 255, 0), 2)
             cv2.putText(img, f"{conf:.0%}", (sx1, sy1 - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-        objects = tracker.update(centroids)
+        objects = tracker.update(det_boxes)
 
         with count_lock:
             for oid, (cx, cy) in objects.items():
                 pos = cx if use_x else cy
+                if oid not in first_positions:
+                    first_positions[oid] = pos
                 if oid in prev_positions:
                     prev = prev_positions[oid]
                     if prev < line_px and pos >= line_px:
                         count_in += 1
+                        counted_ids.add(oid)
                     elif prev > line_px and pos <= line_px:
                         count_out += 1
+                        counted_ids.add(oid)
                 prev_positions[oid] = pos
 
             for oid in list(prev_positions.keys()):
                 if oid not in objects:
+                    if oid not in counted_ids and oid in first_positions:
+                        first = first_positions[oid]
+                        last = prev_positions[oid]
+                        if first < line_px and last >= line_px:
+                            count_in += 1
+                        elif first > line_px and last <= line_px:
+                            count_out += 1
                     del prev_positions[oid]
+                    first_positions.pop(oid, None)
+                    counted_ids.discard(oid)
 
             occupancy = max(0, count_in - count_out)
 
@@ -236,9 +287,6 @@ def detection_loop():
             cv2.circle(img, (cx, cy), 4, (255, 0, 0), -1)
             cv2.putText(img, f"ID {oid}", (cx - 10, cy - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-
-        cv2.putText(img, f"IN: {count_in}  OUT: {count_out}  OCCUPANCY: {occupancy}",
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
         _, out = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
         with processed_lock:
@@ -289,7 +337,7 @@ HTML = """
     </script>
 </head>
 <body>
-    <h1>Room Occupancy Monitor</h1>
+    <h1>Occupancy Monitor</h1>
     <div class="stats">
         <div class="stat stat-in"><div>IN</div><div class="num" id="in">0</div></div>
         <div class="stat stat-out"><div>OUT</div><div class="num" id="out">0</div></div>
