@@ -1,8 +1,8 @@
 // Indoor Enclosure for Raspberry Pi Camera Rev 1.3
 // Two pieces: housing + snap-on lid.
-// Lens faces forward through collar. Board slides in from top.
-// Lid snaps on and has a cable slot for the ribbon cable.
-// Screw holes in base flange for mounting.
+// Lens faces forward through a SQUARE port cut flush through the front wall
+// (no collar, no protrusion). Board slides in from top. Lid snaps on with
+// cable slot. Screw holes in base flange for mounting.
 
 /* ── Camera board ── */
 board_w      = 25;
@@ -23,10 +23,10 @@ cable_w      = 16.5;     // ribbon cable width
 cable_slot_h = 3;        // cable slot height in lid
 corner_r     = 2;
 
-// Lens collar
-lens_hole_dia = lens_dia + 0.6;   // 9.1mm bore
-collar_od    = lens_dia + 4;      // 12.5mm outer
-collar_protrude = 3;              // sticks out front
+/* Square lens port — REPLACES the old collar + circular bore.
+   Same 9.1mm size as the old circular hole (0.6mm clearance). */
+square_hole_side = lens_dia + 0.6;   // 9.1mm square bore
+square_recess    = 3.0;              // mm the port recesses into the interior
 
 // Base flange screws
 flange_screw_dia = 3.2;  // M3 clearance
@@ -37,8 +37,8 @@ snap_depth   = 1.5;      // how deep the lip sits
 lip_h        = 2.5;      // inner lip height on lid
 
 /* ── Derived ──
-   Board upright: X=width, Z=depth(front-back), Y=height
-   Front = -Z, lens points -Z
+   X = width, Y = depth (front = -Y), Z = height
+   Front face is at Y = -(outer_z/2)
 */
 inner_x = board_w + 2 * clearance;
 inner_z = board_t + lens_h + 2 * clearance;
@@ -50,10 +50,8 @@ outer_y = inner_y + wall;   // walls on bottom + sides, lid closes top
 flange_x = outer_x + 10;
 flange_z = outer_z + 6;
 
-// Lens Y position from base
+// Lens Z (height) position from base
 lens_y = wall + clearance + board_h/2 + lens_cy;
-
-lid_outer_y = wall;     // lid thickness
 
 /* ══════════════════════════════
    Housing — open top, board slides in
@@ -72,16 +70,19 @@ module camera_housing() {
             // Base flange
             translate([0, 0, wall/4])
                 rounded_box(flange_x, flange_z, wall/2, corner_r + 2);
-
-            // Lens collar — protrudes out front
-            translate([lens_cx, -(outer_z/2), lens_y])
-                lens_collar();
         }
 
-        // Square lens bore through front wall + collar
-        translate([lens_cx, -(outer_z/2 + collar_protrude + 1), lens_y])
-            rotate([-90, 0, 0])
-                cube([lens_hole_dia, lens_hole_dia, wall + collar_protrude + 2], center=true);
+        // --- Square lens port through the front wall (no collar) ---
+        // Front face at Y = -(outer_z/2). Cut starts FLUSH with the front face,
+        // goes through the full wall thickness, and recesses a little into
+        // the interior so the lens has a ledge to seat against.
+        port_front_y   = -(outer_z/2);                         // - front face
+        port_back_y    = port_front_y + wall + square_recess;  // into interior
+        port_center_y  = (port_front_y + port_back_y) / 2;
+        port_y_extent  = port_back_y - port_front_y;
+
+        translate([lens_cx, port_center_y, lens_y])
+            cube([square_hole_side, port_y_extent, square_hole_side], center=true);
 
         // Flange screw holes (4 corners)
         for (x = [-(flange_x/2 - 4), (flange_x/2 - 4)])
@@ -110,8 +111,8 @@ module camera_housing() {
    Lid — snaps on top, has cable slot
    ══════════════════════════════ */
 module camera_lid() {
-    // Cap: Z=0 to Z=wall (flat top surface)
-    // Lip: Z=-lip_h to Z=0 (hangs into housing)
+    // Cap: Y=0 to Y=wall (flat top surface)
+    // Lip: Y=-lip_h to Y=0 (hangs into housing)
     difference() {
         union() {
             // Flat cap
@@ -133,16 +134,6 @@ module camera_lid() {
             cube([inner_x/2, 0.6, 1.5], center=true);
 }
 
-/* ── Lens collar ── */
-module lens_collar() {
-    rotate([-90, 0, 0])
-    difference() {
-        cube([collar_od, collar_od, collar_protrude + wall], center=true);
-        translate([0, 0, -0.1])
-            cube([lens_hole_dia, lens_hole_dia, collar_protrude + wall + 0.2], center=true);
-    }
-}
-
 /* ── Helper ── */
 module rounded_box(w, h, d, r) {
     rr = min(r, min(w, min(h, d)) / 2 - 0.1);
@@ -158,10 +149,9 @@ module rounded_box(w, h, d, r) {
    ══════════════════════════════ */
 
 // Preview — lid on top of housing
-//color("SlateGray") camera_housing();
-//color("Blue") translate([0, 0, board_w+lip_h]) camera_lid();
-
+color("SlateGray") camera_housing();
+color("Blue") translate([0, 0, board_w+lip_h]) camera_lid();
 
 // For STL export, render ONE at a time:
-camera_housing(); // → camera_housing.stl
+//camera_housing(); // → camera_housing.stl
 //camera_lid();     // → camera_lid.stl
