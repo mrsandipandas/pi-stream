@@ -130,7 +130,7 @@ docker run --rm -p 8080:8080 \
 |----------|--------|-------------|
 | `/` | GET | Dashboard with live video and counters |
 | `/stream` | GET | Raw MJPEG stream |
-| `/stats` | GET | JSON: `{"in": N, "out": N, "occupancy": N}` |
+| `/stats` | GET | JSON: `{"timestamp": 1696012345.678, "in": N, "out": N, "occupancy": N}` — timestamp is Unix epoch (seconds since 1970-01-01 UTC, with millisecond precision) |
 | `/reset` | POST | Reset all counters to zero |
 
 Reset counters: `curl -X POST http://localhost:8080/reset`

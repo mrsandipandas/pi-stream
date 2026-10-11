@@ -11,6 +11,7 @@ from flask import Flask, Response, render_template_string, jsonify
 from ultralytics import YOLO
 
 app = Flask(__name__)
+app.json.sort_keys = False
 
 PI_HOST = os.environ.get("PI_HOST", "sandipan-pi.local")
 PI_PORT = int(os.environ.get("PI_PORT", "9000"))
@@ -364,7 +365,8 @@ def stream():
 @app.route("/stats")
 def stats():
     with count_lock:
-        return jsonify({"in": count_in, "out": count_out,
+        return jsonify({"timestamp": time.time(),
+                        "in": count_in, "out": count_out,
                         "occupancy": max(0, count_in - count_out)})
 
 
