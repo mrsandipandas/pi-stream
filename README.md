@@ -86,21 +86,29 @@ A yellow line divides the frame. When a tracked person's centroid crosses the li
 
 ### Detection and tracking
 
-YOLOv8n runs person detection on each frame. A centroid tracker assigns stable IDs to detected people across frames to track their movement.
+YOLOv8n runs person detection on each frame. A SORT tracker (Kalman filter + Hungarian algorithm) assigns stable IDs to detected people and predicts their motion between frames. This handles fast movement and low fps (2-5 fps) much better than simple centroid matching.
+
+**How it works:**
+
+1. YOLO detects person bounding boxes each frame
+2. Kalman filter predicts where each tracked person will be based on their velocity
+3. Predicted boxes are matched to new detections using IoU (box overlap) via the Hungarian algorithm
+4. Crossings are counted frame-by-frame, plus a safety net on disappearance: if a person was first seen on one side of the line and last seen on the other, the crossing is counted even if no single frame captured the exact moment
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `MIN_CONFIDENCE` | `0.45` | Minimum YOLO confidence to count a detection as a person. Lower catches more (children, partial views) but risks false positives from furniture or shadows. Higher is stricter but may miss small or partially visible people |
-| `MAX_DIST` | `80` | Maximum pixel distance to match a detection to an existing tracked person across frames. If a detection is further than this from any known person, it becomes a new ID. Keep proportional to frame size (80 is good for 320×240) |
+| `IOU_THRESHOLD` | `0.2` | Minimum bounding box overlap to match a detection to an existing track. Lower is more permissive (keeps IDs through occlusion), higher is stricter (avoids wrong matches) |
+| `MAX_AGE` | `15` | Frames a track survives without detection before being removed. At 2-5 fps, 15 frames ≈ 3-7 seconds. Raise if people briefly leave the frame and return |
 | `DETECT_EVERY` | `1` | Run YOLO every N frames. At 2-5 fps from the Pi, keep at `1`. On faster cameras, `2` or `3` halves/thirds the CPU load by reusing bounding boxes between detections |
 
 **Tuning guide:**
 
 - Too many ghost IDs appearing → raise `MIN_CONFIDENCE` to `0.55` or `0.6`
 - Missing children or crouching people → lower `MIN_CONFIDENCE` to `0.3`
-- IDs swapping between nearby people → lower `MAX_DIST` to `50`
-- Person loses their ID when briefly occluded → raise `MAX_DIST` to `100`
-- A new person must be detected in **2 consecutive frames** before they get a confirmed ID (not configurable, hardcoded to reduce flicker)
+- IDs swapping between nearby people → raise `IOU_THRESHOLD` to `0.3`
+- Person loses their ID when briefly occluded → lower `IOU_THRESHOLD` to `0.1` or raise `MAX_AGE` to `25`
+- Fast crossings not counted → the disappearance check should catch these automatically
 
 Example with custom settings:
 
@@ -111,7 +119,8 @@ docker run --rm -p 8080:8080 \
   -e COUNT_AXIS=y \
   -e LINE_POS=0.4 \
   -e MIN_CONFIDENCE=0.35 \
-  -e MAX_DIST=60 \
+  -e IOU_THRESHOLD=0.15 \
+  -e MAX_AGE=20 \
   pi-stream
 ```
 
