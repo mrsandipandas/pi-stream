@@ -2,6 +2,16 @@
 
 Streams video from a Raspberry Pi camera, detects people with YOLOv8, and tracks room occupancy by counting crossings over a configurable line.
 
+## Demo
+
+<div align="center">
+  <a href="assets/demo.mp4">
+    <img src="assets/demo-thumbnail.jpg" alt="Demo video" width="600"/>
+    <br/>
+    <img src="https://img.shields.io/badge/▶_Play_Demo-blue?style=for-the-badge&logo=youtube&logoColor=white" alt="Play Demo"/>
+  </a>
+</div>
+
 ## Architecture
 
 - **Raspberry Pi** runs `pi_camera.py` — captures frames and serves them on port 9000
