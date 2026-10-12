@@ -19,8 +19,8 @@ lens_cy      = 2.0;      // lens Y offset — ABOVE center, toward connector
 /* ── Enclosure ── */
 wall         = 2.0;
 clearance    = 0.6;
-cable_w      = 16.5;     // ribbon cable width
-cable_slot_h = 3;        // cable slot height in lid
+cable_w      = 18;       // ribbon cable exit width (1.8cm)
+cable_top    = 6;        // clearance above board for cable connector
 corner_r     = 2;
 
 /* Square lens port — REPLACES the old collar + circular bore.
@@ -41,8 +41,8 @@ lip_h        = 2.5;      // inner lip height on lid
    Front face is at Y = -(outer_z/2)
 */
 inner_x = board_w + 2 * clearance;
-inner_z = board_t + lens_h + 2 * clearance;
-inner_y = board_h + 2 * clearance;
+inner_z = max(board_t + lens_h + 2 * clearance, 9);
+inner_y = board_h + clearance + cable_top;
 outer_x = inner_x + 2 * wall;
 outer_z = inner_z + 2 * wall;
 outer_y = inner_y + wall;   // walls on bottom + sides, lid closes top
@@ -95,16 +95,11 @@ module camera_housing() {
             for (y = [-(flange_z/2 - 4), (flange_z/2 - 4)])
                 translate([x, y, -0.1])
                     cylinder(d1=flange_screw_dia + 3, d2=flange_screw_dia, h=1.5, $fn=20);
+
+        // Cable exit slot — horizontal slit in rear wall, near bottom
+        translate([0, (outer_z/2), wall + 1])
+            cube([18, wall + 1, 2], center=true);
     }
-
-    // PCB guide rails inside
-    for (side = [-1, 1])
-        translate([side * (inner_x/2 - 0.8), (clearance + board_t/2 - inner_z/2), wall + inner_y/2])
-            cube([1.5, 1.2, inner_y - 4], center=true);
-
-    // Board support shelf at bottom
-    translate([0, (clearance + board_t/2 - inner_z/2), wall + 1])
-        cube([inner_x - 6, 1.5, 2], center=true);
 }
 
 /* ══════════════════════════════
@@ -113,19 +108,13 @@ module camera_housing() {
 module camera_lid() {
     // Cap: Y=0 to Y=wall (flat top surface)
     // Lip: Y=-lip_h to Y=0 (hangs into housing)
-    difference() {
-        union() {
-            // Flat cap
-            rounded_box(outer_x, outer_z, wall, corner_r);
+    union() {
+        // Flat cap
+        rounded_box(outer_x, outer_z, wall, corner_r);
 
-            // Lip hanging below cap
-            translate([0, 0, -lip_h/2])
-                cube([inner_x - 2*snap_tol, inner_z - 2*snap_tol, lip_h], center=true);
-        }
-
-        // Cable slot — through back edge of cap + lip
-        translate([0, (outer_z/2 - wall/2), 0])
-            cube([cable_w + 1, wall + 1, lip_h + wall + 2], center=true);
+        // Lip hanging below cap
+        translate([0, 0, -lip_h/2])
+            cube([inner_x - 2*snap_tol, inner_z - 2*snap_tol, lip_h], center=true);
     }
 
     // Snap bumps on the lip
@@ -149,9 +138,9 @@ module rounded_box(w, h, d, r) {
    ══════════════════════════════ */
 
 // Preview — lid on top of housing
-color("SlateGray") camera_housing();
-color("Blue") translate([0, 0, board_w+lip_h]) camera_lid();
+color("Blue") camera_housing();
+color("Gold") translate([0, 0, outer_y]) camera_lid();
 
 // For STL export, render ONE at a time:
 //camera_housing(); // → camera_housing.stl
-//camera_lid();     // → camera_lid.stl
+//translate([0, 0, lip_h]) camera_lid(); // → camera_lid.stl
