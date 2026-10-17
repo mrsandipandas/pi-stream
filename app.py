@@ -166,6 +166,45 @@ first_positions = {}
 counted_ids = set()
 
 
+def get_lan_ip():
+    """Best-effort local IP. Inside Docker (bridge network) this is the container
+    IP, not the host LAN IP, so it's only a hint — use the IP the phone can reach."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+def make_qr_svg(data, box=6):
+    """Render a QR code for `data` as a self-contained SVG string (no deps at
+    render time beyond `qrcode`). Returns "" if generation fails."""
+    try:
+        import qrcode
+        qr = qrcode.QRCode(border=2, box_size=1,
+                           error_correction=qrcode.constants.ERROR_CORRECT_M)
+        qr.add_data(data)
+        qr.make(fit=True)
+        matrix = qr.get_matrix()
+    except Exception as e:
+        print(f"QR generation failed: {e}")
+        return ""
+    n = len(matrix)
+    size = n * box
+    rects = "".join(
+        f'<rect x="{x * box}" y="{y * box}" width="{box}" height="{box}"/>'
+        for y, row in enumerate(matrix)
+        for x, val in enumerate(row) if val
+    )
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" '
+            f'height="{size}" viewBox="0 0 {size} {size}" '
+            f'shape-rendering="crispEdges"><rect width="{size}" height="{size}" '
+            f'fill="#fff"/><g fill="#000">{rects}</g></svg>')
+
+
 def recv_exact(sock, n):
     buf = b""
     while len(buf) < n:
@@ -340,6 +379,15 @@ HTML = """
         .stat .num { font-size: 36px; font-weight: bold; }
         img { max-width: 90vw; border: 2px solid #333; border-radius: 8px; }
         .info { color: #888; margin-top: 12px; font-size: 14px; }
+        .join { background: #1b1b1b; border: 1px solid #333; border-radius: 10px;
+                padding: 16px 20px; margin: 4px 0 8px; display: flex; gap: 20px;
+                align-items: center; flex-wrap: wrap; justify-content: center; }
+        .join .qr { background: #fff; padding: 8px; border-radius: 8px; line-height: 0; }
+        .join .qr svg { width: 160px; height: 160px; display: block; }
+        .join .txt { text-align: left; }
+        .join .txt h2 { margin: 0 0 6px; font-size: 16px; }
+        .join .txt a { color: #6cf; word-break: break-all; font-size: 15px; }
+        .join .txt p { color: #999; font-size: 13px; margin: 6px 0 0; }
     </style>
     <script>
         function updateStats() {
@@ -355,6 +403,17 @@ HTML = """
 </head>
 <body>
     <h1>Occupancy Monitor</h1>
+    {% if show_join %}
+    <div class="join">
+        <div class="qr">{{ qr_svg | safe }}</div>
+        <div class="txt">
+            <h2>📱 Join from your phone</h2>
+            <a href="{{ join_url }}">{{ join_url }}</a>
+            <p>Scan the QR code, or type the link on your phone (same Wi-Fi). Accept the certificate warning, then tap Start.</p>
+            {% if is_local %}<p style="color:#e88;">⚠ This page is open on <b>{{ host }}</b>. Reopen the dashboard at this machine's LAN IP so the QR points somewhere your phone can reach.</p>{% endif %}
+        </div>
+    </div>
+    {% endif %}
     <div class="stats">
         <div class="stat stat-in"><div>IN</div><div class="num" id="in">0</div></div>
         <div class="stat stat-out"><div>OUT</div><div class="num" id="out">0</div></div>
@@ -372,7 +431,19 @@ def index():
     fwd, back = ("Left→Right", "Right→Left") if COUNT_AXIS == "x" else ("Top→Bottom", "Bottom→Top")
     if REVERSE_DIRECTION:
         fwd, back = back, fwd
-    return render_template_string(HTML, in_dir=fwd, out_dir=back)
+
+    show_join = SOURCE == "phone"
+    join_url = qr_svg = ""
+    host = request.host
+    is_local = host.split(":")[0] in ("localhost", "127.0.0.1")
+    if show_join:
+        join_url = f"https://{host}/phone"
+        qr_svg = make_qr_svg(join_url)
+
+    return render_template_string(
+        HTML, in_dir=fwd, out_dir=back,
+        show_join=show_join, join_url=join_url, qr_svg=qr_svg,
+        host=host, is_local=is_local)
 
 
 @app.route("/stream")
@@ -544,7 +615,18 @@ if __name__ == "__main__":
     if SOURCE == "pi":
         threading.Thread(target=receive_from_pi, daemon=True).start()
     else:
-        print("SOURCE=phone: open https://<this-machine-ip>:8080/phone on your phone")
+        ip = os.environ.get("HOST_IP") or get_lan_ip()
+        print("=" * 64)
+        print(f"  This machine IP : {ip}")
+        print(f"  Dashboard + QR  : https://{ip}:8080/   (open this on your laptop)")
+        print(f"  Phone camera    : https://{ip}:8080/phone")
+        if not os.environ.get("HOST_IP"):
+            print("  NOTE: in Docker this is the CONTAINER IP, which the phone cannot")
+            print("        reach. Pass your host's LAN IP so this line is correct:")
+            print("        docker run ... -e HOST_IP=$(ipconfig getifaddr en0) ...")
+            print("        The on-screen QR is always correct as long as you open the")
+            print("        dashboard at the host LAN IP (not localhost).")
+        print("=" * 64)
     threading.Thread(target=detection_loop, daemon=True).start()
 
     # The phone camera (getUserMedia) only works in a secure context, so serve

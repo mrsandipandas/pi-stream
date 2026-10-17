@@ -84,38 +84,57 @@ a capture page; the phone's browser grabs the camera and pushes JPEG frames to
 `app.py`, which runs the same YOLO/occupancy pipeline. No app to install.
 
 1. Start the container in phone mode (served over HTTPS so the browser will grant
-   camera access):
+   camera access). Pass your host's LAN IP as `HOST_IP` so the startup log prints a
+   reachable address — the container itself only sees its internal Docker IP:
 
    ```bash
    docker build -t pi-stream .
-   docker run --rm -p 8080:8080 -e SOURCE=phone pi-stream
+   docker run --rm -p 8080:8080 -e SOURCE=phone \
+     -e HOST_IP=$(ipconfig getifaddr en0) pi-stream   # macOS Wi-Fi
    ```
 
-2. Find this computer's LAN IP (e.g. `192.168.1.42`):
+   (`HOST_IP` is only for the printed log; the on-screen QR works without it.)
 
-   ```bash
-   ipconfig getifaddr en0   # macOS Wi-Fi
-   ```
+2. Your LAN IP (e.g. `192.168.1.42`) is printed at startup, or get it with
+   `ipconfig getifaddr en0`.
 
-3. On the phone (same Wi-Fi network), open:
+3. On the computer, open the dashboard at **https://<computer-ip>:8080/** (accept
+   the self-signed cert warning: "Advanced" → "Proceed"). It shows a **QR code and
+   join link** for the phone.
 
-   ```
-   https://<computer-ip>:8080/phone
-   ```
+4. On the phone (same Wi-Fi network), **scan the QR code** — or open
+   `https://<computer-ip>:8080/phone` directly. Accept the cert warning, tap
+   **Start**, and allow camera access. Use **Flip camera** to switch front/rear.
 
-   The cert is self-signed, so accept the browser warning ("Advanced" →
-   "Proceed"). Tap **Start** and allow camera access. Use **Flip camera** to
-   switch front/rear.
-
-4. On the computer, open the dashboard at **https://localhost:8080/** (accept the
-   same warning). Live video, detection boxes, and IN/OUT/occupancy work exactly
+   Live video, detection boxes, and IN/OUT/occupancy on the dashboard work exactly
    as with the Pi.
+
+   > Open the dashboard at the machine's LAN IP (not `localhost`) so the QR points
+   > to an address the phone can reach. The QR is built from whatever host you used
+   > to load the dashboard.
 
 Notes:
 - Both devices must be on the same network.
 - `SOURCE=phone` serves HTTPS and defaults `ROTATE_180=0`. Counting-line and
   detection flags below all still apply.
 - The phone sends ~320×240 frames at ~5 fps to match the Pi's bandwidth.
+
+### Run edited code without rebuilding
+
+After editing `app.py`, you don't need to rebuild the image. Mount your local
+`app.py` into the existing container and install the two extra deps on start:
+
+```bash
+docker run --rm -p 8080:8080 -e SOURCE=phone \
+  -e HOST_IP=$(ipconfig getifaddr en0) \
+  -v "$PWD/app.py:/app/app.py" \
+  pi-stream \
+  sh -c "pip install --quiet qrcode cryptography && python app.py"
+```
+
+The `pip install` re-runs each start (a few seconds — not a torch download). Once
+the code is stable, bake the deps in permanently with a one-time
+`docker build -t pi-stream .`.
 
 ## Configuration
 
