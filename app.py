@@ -7,21 +7,26 @@ import time
 import cv2
 import numpy as np
 from scipy.optimize import linear_sum_assignment
-from flask import Flask, Response, render_template_string, jsonify
+from flask import Flask, Response, render_template_string, jsonify, request
 from ultralytics import YOLO
 
 app = Flask(__name__)
 app.json.sort_keys = False
 
+# "pi"    = pull frames from the Raspberry Pi over TCP (original behaviour)
+# "phone" = receive frames pushed from a phone browser at /phone (served over HTTPS)
+SOURCE = os.environ.get("SOURCE", "pi").lower()
 PI_HOST = os.environ.get("PI_HOST", "sandipan-pi.local")
 PI_PORT = int(os.environ.get("PI_PORT", "9000"))
-ROTATE_180 = os.environ.get("ROTATE_180", "1") == "1"
+# Phone is usually held upright, so default to no rotation when it's the source.
+ROTATE_180 = os.environ.get("ROTATE_180", "0" if SOURCE == "phone" else "1") == "1"
 COUNT_AXIS = os.environ.get("COUNT_AXIS", "x")  # "x" = left/right, "y" = top/bottom
 LINE_POS = float(os.environ.get("LINE_POS", "0.5"))  # 0-1, fraction of frame
 REVERSE_DIRECTION = os.environ.get("REVERSE_DIRECTION", "0") == "1"  # 1 = right→left / bottom→top is IN
 DETECT_EVERY = int(os.environ.get("DETECT_EVERY", "1"))  # run YOLO every N frames
 
 latest_frame = None
+last_frame_time = 0.0  # epoch seconds of the most recent ingested/received frame
 frame_lock = threading.Lock()
 processed_frame = None
 processed_lock = threading.Lock()
@@ -185,6 +190,7 @@ def receive_from_pi():
                 data = recv_exact(sock, size)
                 with frame_lock:
                     latest_frame = data
+                    globals()["last_frame_time"] = time.time()
         except (ConnectionRefusedError, ConnectionResetError, ConnectionError, OSError) as e:
             print(f"Connection failed: {e}, retrying in 3s...")
             time.sleep(3)
@@ -392,7 +398,156 @@ def reset():
     return jsonify({"status": "reset"})
 
 
+# --- Phone-as-camera source ---------------------------------------------------
+
+PHONE_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Phone Camera</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #111; color: #fff; font-family: -apple-system, system-ui, sans-serif;
+         display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+  h1 { font-size: 18px; margin: 14px 0 4px; }
+  video { width: 100%; max-width: 480px; background: #000; border-radius: 10px; margin-top: 8px; }
+  .row { display: flex; gap: 10px; margin: 14px 0; flex-wrap: wrap; justify-content: center; }
+  button { font-size: 16px; padding: 12px 20px; border: 0; border-radius: 8px; color: #fff; }
+  #start { background: #1a7d1a; }
+  #stop  { background: #7d1a1a; }
+  #flip  { background: #333; }
+  button:disabled { opacity: .4; }
+  .stats { display: flex; gap: 20px; font-size: 14px; color: #bbb; margin-bottom: 8px; }
+  .stats b { color: #fff; }
+  #status { font-size: 14px; margin: 6px 16px; text-align: center; color: #9ad; min-height: 20px; }
+</style>
+</head>
+<body>
+  <h1>Phone Camera &rarr; Occupancy Monitor</h1>
+  <div id="status">Tap Start and allow camera access.</div>
+  <video id="v" autoplay playsinline muted></video>
+  <div class="stats">
+    <div>Sent: <b id="sent">0</b></div>
+    <div>FPS: <b id="fps">0</b></div>
+  </div>
+  <div class="row">
+    <button id="start">Start</button>
+    <button id="stop" disabled>Stop</button>
+    <button id="flip">Flip camera</button>
+  </div>
+
+<script>
+const TARGET_W = 320, TARGET_H = 240, QUALITY = 0.6, MIN_INTERVAL_MS = 150;
+const v = document.getElementById('v');
+const statusEl = document.getElementById('status');
+const sentEl = document.getElementById('sent');
+const fpsEl = document.getElementById('fps');
+const canvas = document.createElement('canvas');
+canvas.width = TARGET_W; canvas.height = TARGET_H;
+const ctx = canvas.getContext('2d');
+
+let stream = null, running = false, facing = 'environment';
+let sent = 0, lastTick = performance.now(), framesThisSec = 0;
+let wakeLock = null;
+
+function setStatus(msg, color) { statusEl.textContent = msg; statusEl.style.color = color || '#9ad'; }
+
+async function startCamera() {
+  try {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: facing, width: { ideal: 640 }, height: { ideal: 480 } },
+      audio: false
+    });
+    v.srcObject = stream;
+    await v.play();
+    running = true;
+    document.getElementById('start').disabled = true;
+    document.getElementById('stop').disabled = false;
+    setStatus('Streaming to monitor…', '#7d7');
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+    pump();
+  } catch (e) {
+    setStatus('Camera error: ' + e.message + '. Make sure you opened this page over https and allowed the camera.', '#f88');
+  }
+}
+
+function stopCamera() {
+  running = false;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  if (wakeLock) { wakeLock.release(); wakeLock = null; }
+  document.getElementById('start').disabled = false;
+  document.getElementById('stop').disabled = true;
+  setStatus('Stopped.', '#9ad');
+}
+
+async function pump() {
+  while (running) {
+    const t0 = performance.now();
+    try {
+      ctx.drawImage(v, 0, 0, TARGET_W, TARGET_H);
+      const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', QUALITY));
+      if (blob) {
+        const resp = await fetch('/ingest', { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob });
+        if (resp.ok) {
+          sent++; framesThisSec++;
+          sentEl.textContent = sent;
+        } else {
+          setStatus('Server responded ' + resp.status, '#f88');
+        }
+      }
+    } catch (e) {
+      setStatus('Send failed: ' + e.message, '#f88');
+    }
+    const now = performance.now();
+    if (now - lastTick >= 1000) { fpsEl.textContent = framesThisSec; framesThisSec = 0; lastTick = now; }
+    const elapsed = performance.now() - t0;
+    if (elapsed < MIN_INTERVAL_MS) await new Promise(r => setTimeout(r, MIN_INTERVAL_MS - elapsed));
+  }
+}
+
+document.getElementById('start').onclick = startCamera;
+document.getElementById('stop').onclick = stopCamera;
+document.getElementById('flip').onclick = () => { facing = (facing === 'environment') ? 'user' : 'environment'; if (running) startCamera(); };
+// Re-acquire the wake lock if the tab is re-shown.
+document.addEventListener('visibilitychange', async () => {
+  if (running && document.visibilityState === 'visible' && !wakeLock) {
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+});
+</script>
+</body>
+</html>
+"""
+
+
+@app.route("/phone")
+def phone():
+    return Response(PHONE_HTML, mimetype="text/html")
+
+
+@app.route("/ingest", methods=["POST"])
+def ingest():
+    global latest_frame, last_frame_time
+    data = request.get_data()
+    if not data:
+        return jsonify({"status": "empty"}), 400
+    with frame_lock:
+        latest_frame = data
+        last_frame_time = time.time()
+    return jsonify({"status": "ok"})
+
+
 if __name__ == "__main__":
-    threading.Thread(target=receive_from_pi, daemon=True).start()
+    if SOURCE == "pi":
+        threading.Thread(target=receive_from_pi, daemon=True).start()
+    else:
+        print("SOURCE=phone: open https://<this-machine-ip>:8080/phone on your phone")
     threading.Thread(target=detection_loop, daemon=True).start()
-    app.run(host="0.0.0.0", port=8080)
+
+    # The phone camera (getUserMedia) only works in a secure context, so serve
+    # over HTTPS with an on-the-fly self-signed cert when the phone is the source.
+    ssl_context = "adhoc" if SOURCE == "phone" else None
+    app.run(host="0.0.0.0", port=8080, threaded=True, ssl_context=ssl_context)

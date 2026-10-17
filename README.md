@@ -14,8 +14,23 @@ Streams video from a Raspberry Pi camera, detects people with YOLOv8, and tracks
 
 ## Architecture
 
-- **Raspberry Pi** runs `pi_camera.py` — captures frames and serves them on port 9000
-- **Docker container** runs `app.py` — connects to the Pi, runs YOLO detection, tracks people, serves an MJPEG stream with a dashboard at `http://localhost:8080`
+The **Docker container** runs `app.py` — it runs YOLOv8 person detection, tracks
+people with a SORT tracker, counts line crossings, and serves an MJPEG stream and
+dashboard at `http://localhost:8080`. It accepts frames from one of two sources,
+selected with the `SOURCE` env var:
+
+- **`SOURCE=pi`** (default) — the **Raspberry Pi** runs `pi_camera.py`, which
+  captures frames and serves them over TCP on port 9000. `app.py` connects out to
+  the Pi and pulls frames.
+- **`SOURCE=phone`** — your **phone** is the camera, no Pi required. `app.py`
+  serves a capture page at `/phone` over HTTPS; the phone browser grabs the camera
+  with `getUserMedia` and pushes ~320×240 JPEG frames (~5 fps) to the `/ingest`
+  endpoint. HTTPS (a self-signed cert) is required because mobile browsers only
+  allow camera access in a secure context. See
+  [Using a phone as the camera](#using-a-phone-as-the-camera-no-pi-needed) below.
+
+Either way the frames land in the same buffer and flow through the identical
+detection/counting pipeline.
 
 ## Setup
 
@@ -62,6 +77,46 @@ docker run --rm -p 8080:8080 -e PI_HOST=sandipan-pi.local pi-stream
 
 Open http://localhost:8080.
 
+## Using a phone as the camera (no Pi needed)
+
+If the Pi can't stream, your phone can be the camera instead. The container serves
+a capture page; the phone's browser grabs the camera and pushes JPEG frames to
+`app.py`, which runs the same YOLO/occupancy pipeline. No app to install.
+
+1. Start the container in phone mode (served over HTTPS so the browser will grant
+   camera access):
+
+   ```bash
+   docker build -t pi-stream .
+   docker run --rm -p 8080:8080 -e SOURCE=phone pi-stream
+   ```
+
+2. Find this computer's LAN IP (e.g. `192.168.1.42`):
+
+   ```bash
+   ipconfig getifaddr en0   # macOS Wi-Fi
+   ```
+
+3. On the phone (same Wi-Fi network), open:
+
+   ```
+   https://<computer-ip>:8080/phone
+   ```
+
+   The cert is self-signed, so accept the browser warning ("Advanced" →
+   "Proceed"). Tap **Start** and allow camera access. Use **Flip camera** to
+   switch front/rear.
+
+4. On the computer, open the dashboard at **https://localhost:8080/** (accept the
+   same warning). Live video, detection boxes, and IN/OUT/occupancy work exactly
+   as with the Pi.
+
+Notes:
+- Both devices must be on the same network.
+- `SOURCE=phone` serves HTTPS and defaults `ROTATE_180=0`. Counting-line and
+  detection flags below all still apply.
+- The phone sends ~320×240 frames at ~5 fps to match the Pi's bandwidth.
+
 ## Configuration
 
 All flags are environment variables passed to `docker run` with `-e`:
@@ -72,8 +127,9 @@ All flags are environment variables passed to `docker run` with `-e`:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `PI_HOST` | `sandipan-pi.local` | Hostname or IP of the Raspberry Pi |
-| `PI_PORT` | `9000` | Port the Pi camera serves on |
+| `SOURCE` | `pi` | Frame source: `pi` pulls from the Raspberry Pi over TCP; `phone` serves an HTTPS capture page at `/phone` and ingests frames pushed from a phone browser |
+| `PI_HOST` | `sandipan-pi.local` | Hostname or IP of the Raspberry Pi (used when `SOURCE=pi`) |
+| `PI_PORT` | `9000` | Port the Pi camera serves on (used when `SOURCE=pi`) |
 
 ### Image
 
