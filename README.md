@@ -136,6 +136,13 @@ The `pip install` re-runs each start (a few seconds — not a torch download). O
 the code is stable, bake the deps in permanently with a one-time
 `docker build -t pi-stream .`.
 
+To stop the container (and free port 8080 if a rerun complains it's already
+allocated):
+
+```bash
+docker ps --filter publish=8080 -q | xargs -r docker stop
+```
+
 ## Configuration
 
 All flags are environment variables passed to `docker run` with `-e`:
