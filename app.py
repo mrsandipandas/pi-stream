@@ -18,6 +18,7 @@ PI_PORT = int(os.environ.get("PI_PORT", "9000"))
 ROTATE_180 = os.environ.get("ROTATE_180", "1") == "1"
 COUNT_AXIS = os.environ.get("COUNT_AXIS", "x")  # "x" = left/right, "y" = top/bottom
 LINE_POS = float(os.environ.get("LINE_POS", "0.5"))  # 0-1, fraction of frame
+REVERSE_DIRECTION = os.environ.get("REVERSE_DIRECTION", "0") == "1"  # 1 = right→left / bottom→top is IN
 DETECT_EVERY = int(os.environ.get("DETECT_EVERY", "1"))  # run YOLO every N frames
 
 latest_frame = None
@@ -189,8 +190,17 @@ def receive_from_pi():
             time.sleep(3)
 
 
+def record_crossing(forward):
+    # forward = left→right (x) or top→bottom (y); caller must hold count_lock
+    global count_in, count_out
+    if forward != REVERSE_DIRECTION:
+        count_in += 1
+    else:
+        count_out += 1
+
+
 def detection_loop():
-    global count_in, count_out, processed_frame
+    global processed_frame
     frame_count = 0
     last_boxes = []
 
@@ -262,10 +272,10 @@ def detection_loop():
                 if oid in prev_positions:
                     prev = prev_positions[oid]
                     if prev < line_px and pos >= line_px:
-                        count_in += 1
+                        record_crossing(forward=True)
                         counted_ids.add(oid)
                     elif prev > line_px and pos <= line_px:
-                        count_out += 1
+                        record_crossing(forward=False)
                         counted_ids.add(oid)
                 prev_positions[oid] = pos
 
@@ -275,9 +285,9 @@ def detection_loop():
                         first = first_positions[oid]
                         last = prev_positions[oid]
                         if first < line_px and last >= line_px:
-                            count_in += 1
+                            record_crossing(forward=True)
                         elif first > line_px and last <= line_px:
-                            count_out += 1
+                            record_crossing(forward=False)
                     del prev_positions[oid]
                     first_positions.pop(oid, None)
                     counted_ids.discard(oid)
@@ -345,7 +355,7 @@ HTML = """
         <div class="stat stat-occ"><div>OCCUPANCY</div><div class="num" id="occ">0</div></div>
     </div>
     <img src="/stream" alt="Camera">
-    <p class="info">Yellow line = counting boundary | Left→Right = IN | Right→Left = OUT</p>
+    <p class="info">Yellow line = counting boundary | {{ in_dir }} = IN | {{ out_dir }} = OUT</p>
 </body>
 </html>
 """
@@ -353,7 +363,10 @@ HTML = """
 
 @app.route("/")
 def index():
-    return render_template_string(HTML)
+    fwd, back = ("Left→Right", "Right→Left") if COUNT_AXIS == "x" else ("Top→Bottom", "Bottom→Top")
+    if REVERSE_DIRECTION:
+        fwd, back = back, fwd
+    return render_template_string(HTML, in_dir=fwd, out_dir=back)
 
 
 @app.route("/stream")

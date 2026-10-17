@@ -89,9 +89,10 @@ A yellow line divides the frame. When a tracked person's centroid crosses the li
 |------|---------|-------------|
 | `COUNT_AXIS` | `x` | Which axis the line crosses: `x` = vertical line (left/right movement), `y` = horizontal line (top/bottom movement) |
 | `LINE_POS` | `0.5` | Position of counting line as fraction of frame (0.0 to 1.0). `0.5` = center, `0.3` = 30% from left/top |
+| `REVERSE_DIRECTION` | `0` | Set to `1` to swap IN and OUT, so Right → Left (or Bottom → Top) counts as IN |
 
-- **Left → Right** (or Top → Bottom) = **IN**
-- **Right → Left** (or Bottom → Top) = **OUT**
+- **Left → Right** (or Top → Bottom) = **IN** (OUT when `REVERSE_DIRECTION=1`)
+- **Right → Left** (or Bottom → Top) = **OUT** (IN when `REVERSE_DIRECTION=1`)
 - **Occupancy** = IN − OUT (floored at 0)
 
 ### Detection and tracking
