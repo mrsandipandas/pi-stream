@@ -121,8 +121,20 @@ Notes:
 
 ### Run edited code without rebuilding
 
-After editing `app.py`, you don't need to rebuild the image. Mount your local
-`app.py` into the existing container and install the two extra deps on start:
+After editing `app.py` you don't need to rebuild the image — mount your local
+`app.py` over the one baked into the image, and the container runs your live file:
+
+```bash
+cd /Users/sandipan/Desktop/Sandipan/pi-stream
+docker run --rm -p 8080:8080 -e SOURCE=phone \
+  -e HOST_IP=$(ipconfig getifaddr en0) \
+  -v "$PWD/app.py:/app/app.py" \
+  pi-stream
+```
+
+This assumes you've already run `docker build -t pi-stream .` once with the current
+`requirements.txt`, so `cryptography` and `qrcode` are baked in. If you haven't
+rebuilt yet, install them on start instead by appending a command override:
 
 ```bash
 docker run --rm -p 8080:8080 -e SOURCE=phone \
@@ -132,9 +144,14 @@ docker run --rm -p 8080:8080 -e SOURCE=phone \
   sh -c "pip install --quiet qrcode cryptography && python app.py"
 ```
 
-The `pip install` re-runs each start (a few seconds — not a torch download). Once
-the code is stable, bake the deps in permanently with a one-time
-`docker build -t pi-stream .`.
+Iterating on `app.py`:
+
+1. Edit `app.py`.
+2. Stop the running container: `docker ps --filter publish=8080 -q | xargs -r docker stop`
+3. Re-run the command above.
+
+Only `app.py` edits are picked up by the mount. Changes to `requirements.txt` or
+the `Dockerfile` still require a `docker build -t pi-stream .`.
 
 To stop the container (and free port 8080 if a rerun complains it's already
 allocated):
